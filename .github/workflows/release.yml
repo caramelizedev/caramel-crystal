@@ -2,7 +2,7 @@
 # never on a merge or a pull request. A manual run builds without publishing,
 # to try the recipe on the runner.
 #
-# The build takes about 14 minutes on this runner and stays within its 7 GB;
+# The build takes 11 to 14 minutes on this runner and stays within its 7 GB;
 # the build step prints its time and peak memory.
 name: release
 
