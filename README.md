@@ -39,6 +39,8 @@ recipe produce the same archive.
 - each download has its pinned SHA-256, and the tag resolves to the pinned commit;
 - `llvm-config` names only static libraries inside the pinned LLVM;
 - the compiler reports the pinned Crystal version, commit, LLVM version and default target;
+- the binary starts on the oldest macOS its default target names (11.0), whatever macOS
+  built it;
 - the multi-threaded runtime and the threaded code generation path are in the binary;
 - the binary loads no library outside `/usr/lib` and `/System/Library`;
 - a program it compiles, once with one thread and once with its default, runs and prints

@@ -48,6 +48,8 @@ fi
 
 NAME=crystal-$CRYSTAL_VERSION-caramel.$REVISION-darwin-arm64
 SHORT=$(printf '%s' "$CRYSTAL_COMMIT" | cut -c1-9)
+# The oldest macOS the compiler itself must start on: the target's own.
+MINIMUM=${TARGET##*-macosx}
 OFFICIAL=$WORK/official
 LLVM=$WORK/llvm
 SOURCE=$WORK/src
@@ -101,12 +103,14 @@ LDFLAGS=$(echo $LIBRARIES $SYSTEM)
 
 # 3. The build. The Makefile turns threads off when no `crystal` on PATH
 # reports a version, so the official compiler is on PATH and
-# sequential_codegen is set empty as well.
+# sequential_codegen is set empty as well. Without a deployment target the
+# linker stamps the build machine's macOS as the oldest the compiler runs on.
 printf '#!/bin/sh\nexec "%s" "$@"\n' "$OFFICIAL/embedded/bin/crystal" > "$WORK/bin/crystal"
 chmod 755 "$WORK/bin/crystal"
 (
     cd "$SOURCE"
     env -i HOME="$HOME" TMPDIR="${TMPDIR:-/tmp}" PATH="$WORK/bin:/usr/bin:/bin" \
+        MACOSX_DEPLOYMENT_TARGET="$MINIMUM" \
         CRYSTAL_CACHE_DIR="$WORK/cache" \
         CRYSTAL_LIBRARY_PATH="$OFFICIAL/embedded/lib" \
         LLVM_LDFLAGS="$LDFLAGS" \
@@ -127,6 +131,10 @@ case $REPORT in
 esac
 printf '%s\n' "$REPORT" | grep -qx "LLVM: $LLVM_VERSION" || fail "the compiler reports: $REPORT"
 printf '%s\n' "$REPORT" | grep -qx "Default target: $TARGET" || fail "the compiler reports: $REPORT"
+
+# It starts on every macOS the target names, not only on the build machine's.
+STAMPED=$(/usr/bin/otool -l "$BUILT" | awk '$2 == "LC_BUILD_VERSION" { found = 1 } found && $1 == "minos" { print $2; exit }')
+[ "$STAMPED" = "$MINIMUM" ] || fail "the compiler requires macOS $STAMPED, not $MINIMUM"
 
 # Threaded: the multi-threaded runtime is in, the single-threaded scheduler
 # is out, and the threaded code generation path was compiled.
