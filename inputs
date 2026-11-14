@@ -1,34 +1,42 @@
 # The pinned inputs of the build, read by ./build as shell assignments.
-# Changing a line is a reviewed dependency change.
+# Changing a line is a reviewed dependency change. Each component is at its
+# latest stable release; Caramel's own pins of Crystal move with this file.
 
 # The Crystal tag, and the commit that tag must resolve to.
-CRYSTAL_VERSION=1.22.1
-CRYSTAL_COMMIT=23828b0a40d148c5a891c23ad0d14163979fc01a
+CRYSTAL_VERSION=1.22.3
+CRYSTAL_COMMIT=3462c0774d5353a76c5f95cf51cea597ba7b8f29
 
 # This build's number for that tag; raise it to publish the tag again.
 REVISION=1
 
-# The official archive: the compiler that does the build, and the bdw-gc and
-# PCRE2 libraries linked into the result. Same pin as caramel's
-# tools/toolchain/mise.lock.
-OFFICIAL_URL=https://github.com/crystal-lang/crystal/releases/download/1.22.1/crystal-1.22.1-1-darwin-universal.tar.gz
-OFFICIAL_SHA256=8f2dc1ba8219bb2606a2390b11f903f70be346cfeae869557b7c927f37ed9023
+# The official archive of that tag: the compiler that does the build, and the
+# bdw-gc library linked into the result.
+OFFICIAL_URL=https://github.com/crystal-lang/crystal/releases/download/1.22.3/crystal-1.22.3-1-darwin-universal.tar.gz
+OFFICIAL_SHA256=a37341e3caca06790bd89447e0c264d9f0d9824e0eae050e35bdebb027796433
 
-# LLVM's static libraries and headers. Same pin as caramel's
-# tools/editor-darwin-arm64.json.
-LLVM_VERSION=15.0.7
-LLVM_URL=https://conda.anaconda.org/conda-forge/osx-arm64/llvmdev-15.0.7-h4429f82_5.conda
-LLVM_SHA256=f3d4009d64a5dd2755a90437162fb447879181f1b80fac42982c5827ef94fa3e
-
-# The default target of the programs the compiler builds, as the official one has it.
-TARGET=aarch64-apple-macosx11.0
-
-# The licence texts of the two libraries linked from the official archive,
-# which carries neither. The build fails when that archive holds another
-# version of either. bdw-gc states its licence in README.QUICK.
+# bdw-gc as the official archive carries it; the build fails on another
+# version. The archive has no licence file for it, and bdw-gc states its
+# licence in README.QUICK.
 GC_VERSION=8.2.12
 GC_LICENSE_URL=https://raw.githubusercontent.com/ivmai/bdwgc/v8.2.12/README.QUICK
 GC_LICENSE_SHA256=46cf78d79f08ec7295e1c767213582c60eccba2c5bcb07b1b29fd7ddb138fbdc
-PCRE2_VERSION=10.42
-PCRE2_LICENSE_URL=https://raw.githubusercontent.com/PCRE2Project/pcre2/pcre2-10.42/LICENCE
-PCRE2_LICENSE_SHA256=87d884eceb7fc54611470ce9f74280d28612b0c877adfc767e9676892a638987
+
+# LLVM's static libraries and headers, from conda-forge.
+LLVM_VERSION=23.1.5
+LLVM_URL=https://conda.anaconda.org/conda-forge/osx-arm64/llvmdev-23.1.5-h79441dc_0.conda
+LLVM_SHA256=e97ad3e0a696e2b189127f9ed7dee4f064e70c0c69e375458a5afd0334850148
+
+# zstd's static library, which that LLVM links, from conda-forge.
+ZSTD_VERSION=1.5.7
+ZSTD_URL=https://conda.anaconda.org/conda-forge/osx-arm64/zstd-static-1.5.7-hfbe9180_7.conda
+ZSTD_SHA256=e817ff246bdf44ec470071a69abba0a961ee001413aa74276798135925163870
+
+# PCRE2's source, built here as a static library: conda-forge ships it shared
+# only, and the official archive carries 10.42.
+PCRE2_VERSION=10.49
+PCRE2_URL=https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.49/pcre2-10.49.tar.bz2
+PCRE2_SHA256=53c156e1ba416a20da8e65395daa132da0d80e76910424caca3fcdae7831d384
+
+# The default target of the programs the compiler builds, as the official one
+# has it; its macOS version is also the oldest the compiler itself starts on.
+TARGET=aarch64-apple-macosx11.0

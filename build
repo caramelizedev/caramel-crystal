@@ -1,7 +1,7 @@
 #!/bin/sh
 # Builds the pinned Crystal tag with threaded code generation, statically
-# against the pinned LLVM, using the official compiler of the same tag, and
-# packs the result.
+# against the pinned LLVM, zstd and PCRE2, using the official compiler of the
+# same tag, and packs the result.
 #
 #   ./build [WORK]
 #
@@ -30,6 +30,19 @@ fetch() {
     [ "$(sha256 "$3")" = "$2" ] || fail "$1 does not have SHA-256 $2"
 }
 
+# Unpacks a conda package into DIRECTORY: its files, and info/ with its
+# licences. A .conda holds one tarball of each.
+unpack_conda() {
+    rm -rf "$WORK/conda"
+    mkdir -p "$WORK/conda" "$2"
+    /usr/bin/tar -xf "$1" -C "$WORK/conda"
+    for INNER in "$WORK"/conda/pkg-*.tar.zst "$WORK"/conda/info-*.tar.zst; do
+        [ -f "$INNER" ] || fail "unexpected contents in $1"
+        /usr/bin/tar -xf "$INNER" -C "$2"
+    done
+    rm -rf "$WORK/conda"
+}
+
 [ "$(uname -s)-$(uname -m)" = Darwin-arm64 ] || fail 'needs macOS on Apple Silicon'
 
 WORK=${1:-$ROOT/work}
@@ -52,56 +65,81 @@ SHORT=$(printf '%s' "$CRYSTAL_COMMIT" | cut -c1-9)
 MINIMUM=${TARGET##*-macosx}
 OFFICIAL=$WORK/official
 LLVM=$WORK/llvm
+ZSTD=$WORK/zstd
+PCRE2=$WORK/pcre2
 SOURCE=$WORK/src
 CONFIG=$LLVM/bin/llvm-config
+# Where the compiler, and the programs the checks build with it, find the
+# libraries they link: PCRE2 as built here, then bdw-gc in the official archive.
+LIBRARY_PATH=$PCRE2/lib:$OFFICIAL/embedded/lib
 
 # 1. The inputs, each verified before it is used.
 mkdir -p "$WORK/downloads"
 fetch "$OFFICIAL_URL" "$OFFICIAL_SHA256" "$WORK/downloads/official.tar.gz"
 fetch "$LLVM_URL" "$LLVM_SHA256" "$WORK/downloads/llvmdev.conda"
+fetch "$ZSTD_URL" "$ZSTD_SHA256" "$WORK/downloads/zstd-static.conda"
+fetch "$PCRE2_URL" "$PCRE2_SHA256" "$WORK/downloads/pcre2.tar.bz2"
 fetch "$GC_LICENSE_URL" "$GC_LICENSE_SHA256" "$WORK/downloads/bdw-gc-LICENSE"
-fetch "$PCRE2_LICENSE_URL" "$PCRE2_LICENSE_SHA256" "$WORK/downloads/pcre2-LICENCE"
 
-for PART in official llvm src conda bin cache smoke stage; do
+for PART in official llvm zstd pcre2 pcre2-src src conda bin cache smoke stage; do
     rm -rf "${WORK:?}/$PART"
 done
-mkdir -p "$OFFICIAL" "$LLVM" "$WORK/conda" "$WORK/bin"
+mkdir -p "$OFFICIAL" "$WORK/pcre2-src" "$WORK/bin"
 /usr/bin/tar -xzf "$WORK/downloads/official.tar.gz" -C "$OFFICIAL" --strip-components 1
-/usr/bin/tar -xf "$WORK/downloads/llvmdev.conda" -C "$WORK/conda"
-set -- "$WORK"/conda/pkg-*.tar.zst
-[ $# -eq 1 ] && [ -f "$1" ] || fail "unexpected contents in $LLVM_URL"
-/usr/bin/tar -xf "$1" -C "$LLVM"
+unpack_conda "$WORK/downloads/llvmdev.conda" "$LLVM"
+unpack_conda "$WORK/downloads/zstd-static.conda" "$ZSTD"
+/usr/bin/tar -xjf "$WORK/downloads/pcre2.tar.bz2" -C "$WORK/pcre2-src" --strip-components 1
 [ -x "$CONFIG" ] || fail "$LLVM_URL has no bin/llvm-config"
+[ -f "$ZSTD/lib/libzstd.a" ] || fail "$ZSTD_URL has no lib/libzstd.a"
 
 /usr/bin/git clone --quiet --depth 1 --branch "$CRYSTAL_VERSION" \
     https://github.com/crystal-lang/crystal "$SOURCE"
 [ "$(/usr/bin/git -C "$SOURCE" rev-parse HEAD)" = "$CRYSTAL_COMMIT" ] ||
     fail "tag $CRYSTAL_VERSION is not commit $CRYSTAL_COMMIT"
 
-# 2. LLVM's link line: static libraries from the pinned LLVM only, and system
-# libraries by name only.
+version_of() {
+    sed -n 's/^Version: *//p' "$OFFICIAL/embedded/lib/pkgconfig/$1.pc"
+}
+[ "$(version_of bdw-gc)" = "$GC_VERSION" ] ||
+    fail "the official archive's bdw-gc is $(version_of bdw-gc), not $GC_VERSION"
+
+# 2. PCRE2, as a static library with the options the official archive's has.
+(
+    cd "$WORK/pcre2-src"
+    env -i HOME="$HOME" TMPDIR="${TMPDIR:-/tmp}" PATH=/usr/bin:/bin \
+        MACOSX_DEPLOYMENT_TARGET="$MINIMUM" \
+        ./configure --prefix="$PCRE2" --disable-shared --enable-static --enable-jit \
+        > "$WORK/pcre2-configure.log" 2>&1 || fail "PCRE2 did not configure: $WORK/pcre2-configure.log"
+    env -i HOME="$HOME" TMPDIR="${TMPDIR:-/tmp}" PATH=/usr/bin:/bin \
+        MACOSX_DEPLOYMENT_TARGET="$MINIMUM" \
+        /usr/bin/make -j "$(/usr/sbin/sysctl -n hw.ncpu)" install \
+        > "$WORK/pcre2-make.log" 2>&1 || fail "PCRE2 did not build: $WORK/pcre2-make.log"
+)
+[ -f "$PCRE2/lib/libpcre2-8.a" ] || fail 'the PCRE2 build produced no static library'
+
+# 3. LLVM's link line: static libraries from the pinned LLVM only, the pinned
+# static zstd, and macOS's own libraries by name.
 config() {
     env -i PATH=/usr/bin:/bin DYLD_FALLBACK_LIBRARY_PATH=/usr/lib "$CONFIG" "$@"
 }
 [ "$(config --version)" = "$LLVM_VERSION" ] || fail "llvm-config is not $LLVM_VERSION"
-LIBRARIES=$(config --link-static --libfiles)
-for FILE in $LIBRARIES; do
+LDFLAGS=
+for FILE in $(config --link-static --libfiles); do
     case $FILE in
         "$LLVM/lib/"*) [ -f "$FILE" ] || fail "llvm-config named a missing library: $FILE" ;;
         *) fail "llvm-config named a library outside the pinned LLVM: $FILE" ;;
     esac
+    LDFLAGS="$LDFLAGS $FILE"
 done
-SYSTEM=$(config --link-static --system-libs)
-for FLAG in $SYSTEM; do
+for FLAG in $(config --link-static --system-libs); do
     case $FLAG in
-        -l*) ;;
-        *) fail "unexpected llvm-config system library flag: $FLAG" ;;
+        -lm | -lz | -lxml2) LDFLAGS="$LDFLAGS $FLAG" ;;
+        -lzstd) LDFLAGS="$LDFLAGS $ZSTD/lib/libzstd.a" ;;
+        *) fail "llvm-config names a library this build does not supply: $FLAG" ;;
     esac
 done
-# shellcheck disable=SC2086
-LDFLAGS=$(echo $LIBRARIES $SYSTEM)
 
-# 3. The build. The Makefile turns threads off when no `crystal` on PATH
+# 4. The build. The Makefile turns threads off when no `crystal` on PATH
 # reports a version, so the official compiler is on PATH and
 # sequential_codegen is set empty as well. Without a deployment target the
 # linker stamps the build machine's macOS as the oldest the compiler runs on.
@@ -112,8 +150,8 @@ chmod 755 "$WORK/bin/crystal"
     env -i HOME="$HOME" TMPDIR="${TMPDIR:-/tmp}" PATH="$WORK/bin:/usr/bin:/bin" \
         MACOSX_DEPLOYMENT_TARGET="$MINIMUM" \
         CRYSTAL_CACHE_DIR="$WORK/cache" \
-        CRYSTAL_LIBRARY_PATH="$OFFICIAL/embedded/lib" \
-        LLVM_LDFLAGS="$LDFLAGS" \
+        CRYSTAL_LIBRARY_PATH="$LIBRARY_PATH" \
+        LLVM_LDFLAGS="${LDFLAGS# }" \
         /usr/bin/make crystal release=1 FLAGS=--no-debug sequential_codegen= \
         LLVM_CONFIG="$CONFIG" \
         CRYSTAL_CONFIG_TARGET="$TARGET" \
@@ -123,7 +161,7 @@ chmod 755 "$WORK/bin/crystal"
 BUILT=$SOURCE/.build/crystal
 [ -x "$BUILT" ] || fail 'the build produced no compiler'
 
-# 4. What the result must be.
+# 5. What the result must be.
 REPORT=$("$BUILT" --version)
 case $REPORT in
     "Crystal $CRYSTAL_VERSION [$SHORT]"*) ;;
@@ -154,7 +192,9 @@ grep -q 'Fiber::ExecutionContext' "$SYMBOLS" || fail 'the compiler has no multi-
     esac
 done
 
-# It compiles a program of many modules on its threads, and the program runs.
+# It compiles a program of many modules, with one thread, with its default
+# and in release mode, and each program runs. The program links through the
+# compiler's own library path, so it also reports the PCRE2 found there.
 mkdir -p "$WORK/smoke"
 cat > "$WORK/smoke/smoke.cr" <<'CR'
 require "json"
@@ -162,7 +202,9 @@ require "http/server"
 
 server = HTTP::Server.new { |context| context.response.print("ok") }
 address = server.bind_tcp("127.0.0.1", 0)
-puts({"threads" => [1, 2, 3].map(&.to_s), "bound" => address.port > 0}.to_json)
+minor = "crystal 1.22".match!(/(\d+)\.(\d+)/)[2]
+puts({"threads" => [1, 2, 3].map(&.to_s), "bound" => address.port > 0, "minor" => minor}.to_json)
+puts Regex::PCRE2.version
 server.close
 CR
 # compile LABEL [OPTION...]: builds the smoke program in a cache of its own.
@@ -171,30 +213,27 @@ compile() {
     shift
     env -i HOME="$HOME" TMPDIR="${TMPDIR:-/tmp}" PATH=/usr/bin:/bin \
         CRYSTAL_PATH="$SOURCE/src" \
-        CRYSTAL_LIBRARY_PATH="$OFFICIAL/embedded/lib" \
+        CRYSTAL_LIBRARY_PATH="$LIBRARY_PATH" \
         CRYSTAL_CACHE_DIR="$WORK/smoke/cache-$LABEL" \
         "$BUILT" build "$WORK/smoke/smoke.cr" -o "$WORK/smoke/smoke-$LABEL" \
         -Dwithout_openssl -Dwithout_zlib --stats "$@" > "$WORK/smoke/$LABEL.log" 2>&1 ||
         fail "the smoke build failed: $WORK/smoke/$LABEL.log"
-    PRINTED=$("$WORK/smoke/smoke-$LABEL")
-    [ "$PRINTED" = '{"threads":["1","2","3"],"bound":true}' ] ||
+    PRINTED=$("$WORK/smoke/smoke-$LABEL") || fail "the smoke program ($LABEL) did not run"
+    [ "$(printf '%s\n' "$PRINTED" | sed -n 1p)" = '{"threads":["1","2","3"],"bound":true,"minor":"22"}' ] ||
         fail "the smoke program ($LABEL) printed: $PRINTED"
+    case $(printf '%s\n' "$PRINTED" | sed -n 2p) in
+        "$PCRE2_VERSION "*) ;;
+        *) fail "the smoke program ($LABEL) links PCRE2 $(printf '%s\n' "$PRINTED" | sed -n 2p), not $PCRE2_VERSION" ;;
+    esac
     printf 'smoke, %s: %s\n' "$LABEL" \
         "$(tr '\r' '\n' < "$WORK/smoke/$LABEL.log" | sed -n 's/^Codegen (bc+obj): *\([0-9][0-9:.]*\).*/bc+obj \1/p' | tail -1)"
 }
 compile one-thread --threads 1
 compile default-threads
+compile release --release
 
-# 5. The archive: the compiler, the licences of everything linked into it,
+# 6. The archive: the compiler, the licences of everything linked into it,
 # and what it was built from.
-version_of() {
-    sed -n 's/^Version: *//p' "$OFFICIAL/embedded/lib/pkgconfig/$1.pc"
-}
-[ "$(version_of bdw-gc)" = "$GC_VERSION" ] ||
-    fail "the official archive's bdw-gc is $(version_of bdw-gc), not $GC_VERSION"
-[ "$(version_of libpcre2-8)" = "$PCRE2_VERSION" ] ||
-    fail "the official archive's PCRE2 is $(version_of libpcre2-8), not $PCRE2_VERSION"
-
 STAGE=$WORK/stage/$NAME
 mkdir -p "$STAGE/licenses" "$ROOT/dist"
 cp "$BUILT" "$STAGE/crystal"
@@ -202,9 +241,20 @@ cp "$SOURCE/LICENSE" "$STAGE/licenses/crystal-LICENSE"
 cp "$SOURCE/NOTICE.md" "$STAGE/licenses/crystal-NOTICE.md"
 cp "$SOURCE/LICENSES/Apache-2.0.txt" "$STAGE/licenses/crystal-Apache-2.0.txt"
 cp "$SOURCE/LICENSES/Swift-exception.txt" "$STAGE/licenses/crystal-Swift-exception.txt"
-cp "$LLVM/info/licenses/llvm/LICENSE.TXT" "$STAGE/licenses/llvm-LICENSE.TXT"
 cp "$WORK/downloads/bdw-gc-LICENSE" "$STAGE/licenses/bdw-gc-$GC_VERSION-README.QUICK"
-cp "$WORK/downloads/pcre2-LICENCE" "$STAGE/licenses/pcre2-$PCRE2_VERSION-LICENCE"
+cp "$WORK/pcre2-src/LICENCE.md" "$STAGE/licenses/pcre2-$PCRE2_VERSION-LICENCE.md"
+# copy_licences NAME DIRECTORY: every licence file a conda package carries.
+copy_licences() {
+    [ -d "$2" ] || fail "$1 carries no licence"
+    COPIED=
+    for FILE in $(cd "$2" && find . -type f | LC_ALL=C sort); do
+        cp "$2/$FILE" "$STAGE/licenses/$1-$(printf '%s' "${FILE#./}" | tr / -)"
+        COPIED=1
+    done
+    [ -n "$COPIED" ] || fail "$1 carries no licence"
+}
+copy_licences "llvm-$LLVM_VERSION" "$LLVM/info/licenses"
+copy_licences "zstd-$ZSTD_VERSION" "$ZSTD/info/licenses"
 
 BINARY_SHA256=$(sha256 "$STAGE/crystal")
 # The commit of this recipe, marked when the checkout has uncommitted changes.
@@ -219,9 +269,11 @@ cat > "$STAGE/BUILD.json" <<JSON
   "revision": $REVISION,
   "target": "$TARGET",
   "threaded_codegen": true,
-  "llvm": {"version": "$LLVM_VERSION", "url": "$LLVM_URL", "sha256": "$LLVM_SHA256"},
   "bootstrap": {"url": "$OFFICIAL_URL", "sha256": "$OFFICIAL_SHA256"},
-  "linked_from_bootstrap": {"bdw-gc": "$GC_VERSION", "pcre2": "$PCRE2_VERSION"},
+  "llvm": {"version": "$LLVM_VERSION", "url": "$LLVM_URL", "sha256": "$LLVM_SHA256"},
+  "zstd": {"version": "$ZSTD_VERSION", "url": "$ZSTD_URL", "sha256": "$ZSTD_SHA256"},
+  "pcre2": {"version": "$PCRE2_VERSION", "url": "$PCRE2_URL", "sha256": "$PCRE2_SHA256"},
+  "bdw-gc": {"version": "$GC_VERSION", "from": "bootstrap"},
   "binary_sha256": "$BINARY_SHA256",
   "recipe": "$RECIPE"
 }

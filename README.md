@@ -2,12 +2,14 @@
 
 Builds the Crystal compiler that Caramel's managed toolchain runs on Apple Silicon macOS.
 
-It is the Crystal tag Caramel pins, unpatched, built by the official compiler of the same
-tag, with two differences from the official macOS archive:
+It is a Crystal release, unpatched, built by the official compiler of the same tag. It
+differs from the official macOS archive's compiler in what it is built with:
 
 - code generation runs on several threads (the official macOS binary is built with
   `-Dwithout_mt`, so `--threads` does nothing there);
-- LLVM is linked statically from the conda-forge `llvmdev` package Caramel already pins.
+- every component is at its latest stable release: LLVM and zstd from conda-forge's static
+  libraries, and PCRE2 built here from its source. bdw-gc comes from the official archive,
+  which carries its latest release.
 
 ## Build
 
@@ -43,21 +45,22 @@ recipe produce the same archive.
   built it;
 - the multi-threaded runtime and the threaded code generation path are in the binary;
 - the binary loads no library outside `/usr/lib` and `/System/Library`;
-- a program it compiles, once with one thread and once with its default, runs and prints
-  what it should;
-- the official archive's bdw-gc and PCRE2 are the versions whose licence texts are pinned;
+- a program it compiles, with one thread, with its default and in release mode, runs and
+  prints what it should, and links the pinned PCRE2;
+- the official archive's bdw-gc is the version whose licence text is pinned;
 - the archive holds exactly the staged files, and both JSON files parse.
 
 ## Inputs
 
-`inputs` holds every pin: the Crystal tag and commit, the official archive, the LLVM
-package and the licence texts of bdw-gc and PCRE2, each with its SHA-256. The compiler
-links those two libraries statically from the official archive, which carries no licence
-file for either.
+`inputs` holds every pin, each with its SHA-256: the Crystal tag and commit, the official
+archive, the LLVM and zstd packages, the PCRE2 source and bdw-gc's licence text.
 
 To build another tag, change the tag, its commit and the official archive's URL and hash,
-check the two library versions, and set `REVISION` back to 1. To publish the same tag
-again, raise `REVISION`.
+check the bdw-gc version that archive carries, and set `REVISION` back to 1. To publish
+the same tag again, with a newer LLVM, zstd or PCRE2 for instance, raise `REVISION`.
+
+Caramel's own pins of Crystal (the official archive that supplies the standard library,
+and the release image) move to the same tag as this file's.
 
 ## Release
 
@@ -76,4 +79,5 @@ Running the workflow by hand builds without publishing.
 
 The recipe is under the [MIT License](LICENSE). The compiler it builds is Crystal, under
 the Apache License 2.0 with Swift exception; LLVM is under the Apache License 2.0 with LLVM
-exceptions, bdw-gc under its MIT-style licence and PCRE2 under the BSD 3-Clause licence.
+exceptions, bdw-gc under its MIT-style licence, and PCRE2 and zstd under BSD-style
+licences. The archive carries each text.
