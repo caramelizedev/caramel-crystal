@@ -79,5 +79,5 @@ Running the workflow by hand builds without publishing.
 
 The recipe is under the [MIT License](LICENSE). The compiler it builds is Crystal, under
 the Apache License 2.0 with Swift exception; LLVM is under the Apache License 2.0 with LLVM
-exceptions, bdw-gc under its MIT-style licence, and PCRE2 and zstd under BSD-style
-licences. The archive carries each text.
+exceptions. bdw-gc, PCRE2 and zstd each have their own terms. The archive carries every
+text, and those texts are what applies.
