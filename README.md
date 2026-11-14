@@ -57,6 +57,22 @@ To build another tag, change the tag, its commit and the official archive's URL 
 check the two library versions, and set `REVISION` back to 1. To publish the same tag
 again, raise `REVISION`.
 
+## Release
+
+A release is built on a GitHub runner, and only a release is: the workflow runs when a tag
+is pushed, never on a merge or a pull request.
+
+1. Set the pins in `inputs` and commit.
+2. Tag that commit `<tag>-caramel.<revision>`, such as `1.22.1-caramel.1`, and push the tag.
+   The workflow refuses a tag that does not name what `inputs` builds.
+3. The workflow runs `./build` and publishes the archive and its `.json` as a GitHub
+   release of that tag.
+4. Run `./build` at the same commit on a Mac and compare `binary_sha256` with the
+   release's. Caramel pins the release once the two agree or the difference is explained;
+   the `.json` names the macOS and compiler versions each was built with.
+
+Running the workflow by hand builds without publishing.
+
 ## Licence
 
 The recipe is under the [MIT License](LICENSE). The compiler it builds is Crystal, under

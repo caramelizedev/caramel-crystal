@@ -1,0 +1,66 @@
+# Builds a release, and nothing else: it runs when a release tag is pushed,
+# never on a merge or a pull request. A manual run builds without publishing,
+# to try the recipe on the runner.
+#
+# The runner has 7 GB of memory and the build peaked between 5.5 and 8.4 GiB
+# in four runs on a 36 GB machine, so the build step prints its time and peak
+# memory.
+name: release
+
+on:
+  push:
+    tags:
+      - "*-caramel.*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: The tag names what `inputs` builds
+        if: github.ref_type == 'tag'
+        run: |
+          . ./inputs
+          expected="$CRYSTAL_VERSION-caramel.$REVISION"
+          if [ "$GITHUB_REF_NAME" != "$expected" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match inputs, which build $expected" >&2
+            exit 1
+          fi
+      - name: Build
+        run: /usr/bin/time -l ./build "$RUNNER_TEMP/work"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist
+      - name: Publish the archive and its hashes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          {
+            echo "Crystal ${GITHUB_REF_NAME%%-caramel.*}, built with threaded code generation for Caramel's toolchain."
+            echo
+            echo '```json'
+            cat dist/*.json
+            echo '```'
+          } > notes.md
+          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag \
+            --title "Crystal $GITHUB_REF_NAME" --notes-file notes.md
