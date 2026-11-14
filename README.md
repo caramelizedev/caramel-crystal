@@ -66,10 +66,7 @@ is pushed, never on a merge or a pull request.
 2. Tag that commit `<tag>-caramel.<revision>`, such as `1.22.1-caramel.1`, and push the tag.
    The workflow refuses a tag that does not name what `inputs` builds.
 3. The workflow runs `./build` and publishes the archive and its `.json` as a GitHub
-   release of that tag.
-4. Run `./build` at the same commit on a Mac and compare `binary_sha256` with the
-   release's. Caramel pins the release once the two agree or the difference is explained;
-   the `.json` names the macOS and compiler versions each was built with.
+   release of that tag. Caramel pins the hashes that release publishes.
 
 Running the workflow by hand builds without publishing.
 
