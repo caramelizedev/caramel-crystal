@@ -1,7 +1,7 @@
 # Runs ./build on a hosted Apple Silicon runner, on request. The runner has
-# 7 GB of memory and the build peaked at 5.5 and 7.6 GB in two runs on a
-# 36 GB machine, so it may not fit: the first run is the trial, and the step
-# prints the build's time and peak memory.
+# 7 GB of memory and the build peaked between 5.5 and 8.4 GB in three runs on
+# a 36 GB machine, so it may not fit: the first run is the trial, and the
+# step prints the build's time and peak memory.
 name: build
 
 on: workflow_dispatch

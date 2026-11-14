@@ -16,7 +16,7 @@ tag, with two differences from the official macOS archive:
 ```
 
 It needs macOS on Apple Silicon, Apple's Command Line Tools and the network. A build takes
-about nine minutes and up to 8 GB of memory. Downloads and the build go to `work/`, or to the
+about nine minutes and up to 9 GB of memory. Downloads and the build go to `work/`, or to the
 directory given as the first argument; its path must have no space.
 
 The result is in `dist/`:
