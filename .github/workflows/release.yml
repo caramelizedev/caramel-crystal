@@ -21,7 +21,10 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 120
     steps:
+      # The build downloads and runs its inputs; it needs no token left behind.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: The tag names what `inputs` builds
         if: github.ref_type == 'tag'
         run: |
