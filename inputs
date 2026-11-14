@@ -22,3 +22,13 @@ LLVM_SHA256=f3d4009d64a5dd2755a90437162fb447879181f1b80fac42982c5827ef94fa3e
 
 # The default target of the programs the compiler builds, as the official one has it.
 TARGET=aarch64-apple-macosx11.0
+
+# The licence texts of the two libraries linked from the official archive,
+# which carries neither. The build fails when that archive holds another
+# version of either. bdw-gc states its licence in README.QUICK.
+GC_VERSION=8.2.12
+GC_LICENSE_URL=https://raw.githubusercontent.com/ivmai/bdwgc/v8.2.12/README.QUICK
+GC_LICENSE_SHA256=46cf78d79f08ec7295e1c767213582c60eccba2c5bcb07b1b29fd7ddb138fbdc
+PCRE2_VERSION=10.42
+PCRE2_LICENSE_URL=https://raw.githubusercontent.com/PCRE2Project/pcre2/pcre2-10.42/LICENCE
+PCRE2_LICENSE_SHA256=87d884eceb7fc54611470ce9f74280d28612b0c877adfc767e9676892a638987

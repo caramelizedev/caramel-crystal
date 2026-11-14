@@ -38,6 +38,13 @@ WORK=$(CDPATH= cd -- "$WORK" && pwd -P)
 case $WORK in
     *[[:space:]]*) fail "the work directory has a space in its path: $WORK" ;;
 esac
+# The build deletes and remakes directories inside WORK, so WORK must be one
+# this script made, or empty.
+MARKER=$WORK/.caramel-crystal-work
+if [ ! -f "$MARKER" ]; then
+    [ -z "$(ls -A "$WORK")" ] || fail "$WORK is not empty and was not made by this script"
+    : > "$MARKER"
+fi
 
 NAME=crystal-$CRYSTAL_VERSION-caramel.$REVISION-darwin-arm64
 SHORT=$(printf '%s' "$CRYSTAL_COMMIT" | cut -c1-9)
@@ -50,8 +57,12 @@ CONFIG=$LLVM/bin/llvm-config
 mkdir -p "$WORK/downloads"
 fetch "$OFFICIAL_URL" "$OFFICIAL_SHA256" "$WORK/downloads/official.tar.gz"
 fetch "$LLVM_URL" "$LLVM_SHA256" "$WORK/downloads/llvmdev.conda"
+fetch "$GC_LICENSE_URL" "$GC_LICENSE_SHA256" "$WORK/downloads/bdw-gc-LICENSE"
+fetch "$PCRE2_LICENSE_URL" "$PCRE2_LICENSE_SHA256" "$WORK/downloads/pcre2-LICENCE"
 
-rm -rf "$OFFICIAL" "$LLVM" "$SOURCE" "$WORK/conda" "$WORK/bin" "$WORK/cache" "$WORK/smoke" "$WORK/stage"
+for PART in official llvm src conda bin cache smoke stage; do
+    rm -rf "${WORK:?}/$PART"
+done
 mkdir -p "$OFFICIAL" "$LLVM" "$WORK/conda" "$WORK/bin"
 /usr/bin/tar -xzf "$WORK/downloads/official.tar.gz" -C "$OFFICIAL" --strip-components 1
 /usr/bin/tar -xf "$WORK/downloads/llvmdev.conda" -C "$WORK/conda"
@@ -166,21 +177,33 @@ compile() {
 compile one-thread --threads 1
 compile default-threads
 
-# 5. The archive: the compiler, the licences of Crystal and LLVM, and what
-# it was built from.
+# 5. The archive: the compiler, the licences of everything linked into it,
+# and what it was built from.
+version_of() {
+    sed -n 's/^Version: *//p' "$OFFICIAL/embedded/lib/pkgconfig/$1.pc"
+}
+[ "$(version_of bdw-gc)" = "$GC_VERSION" ] ||
+    fail "the official archive's bdw-gc is $(version_of bdw-gc), not $GC_VERSION"
+[ "$(version_of libpcre2-8)" = "$PCRE2_VERSION" ] ||
+    fail "the official archive's PCRE2 is $(version_of libpcre2-8), not $PCRE2_VERSION"
+
 STAGE=$WORK/stage/$NAME
 mkdir -p "$STAGE/licenses" "$ROOT/dist"
 cp "$BUILT" "$STAGE/crystal"
 cp "$SOURCE/LICENSE" "$STAGE/licenses/crystal-LICENSE"
 cp "$SOURCE/NOTICE.md" "$STAGE/licenses/crystal-NOTICE.md"
+cp "$SOURCE/LICENSES/Apache-2.0.txt" "$STAGE/licenses/crystal-Apache-2.0.txt"
+cp "$SOURCE/LICENSES/Swift-exception.txt" "$STAGE/licenses/crystal-Swift-exception.txt"
 cp "$LLVM/info/licenses/llvm/LICENSE.TXT" "$STAGE/licenses/llvm-LICENSE.TXT"
-version_of() {
-    sed -n 's/^Version: *//p' "$OFFICIAL/embedded/lib/pkgconfig/$1.pc"
-}
+cp "$WORK/downloads/bdw-gc-LICENSE" "$STAGE/licenses/bdw-gc-$GC_VERSION-README.QUICK"
+cp "$WORK/downloads/pcre2-LICENCE" "$STAGE/licenses/pcre2-$PCRE2_VERSION-LICENCE"
+
 BINARY_SHA256=$(sha256 "$STAGE/crystal")
 # The commit of this recipe, marked when the checkout has uncommitted changes.
 RECIPE=$(/usr/bin/git -C "$ROOT" rev-parse --verify --quiet HEAD 2>/dev/null) || RECIPE=unrecorded
 [ -z "$(/usr/bin/git -C "$ROOT" status --porcelain 2>/dev/null)" ] || RECIPE=$RECIPE+uncommitted
+# Only what the inputs and the recipe determine goes into the archive, so
+# that the same build gives the same archive.
 cat > "$STAGE/BUILD.json" <<JSON
 {
   "name": "$NAME",
@@ -190,23 +213,38 @@ cat > "$STAGE/BUILD.json" <<JSON
   "threaded_codegen": true,
   "llvm": {"version": "$LLVM_VERSION", "url": "$LLVM_URL", "sha256": "$LLVM_SHA256"},
   "bootstrap": {"url": "$OFFICIAL_URL", "sha256": "$OFFICIAL_SHA256"},
-  "linked_from_bootstrap": {"bdw-gc": "$(version_of bdw-gc)", "pcre2": "$(version_of libpcre2-8)"},
+  "linked_from_bootstrap": {"bdw-gc": "$GC_VERSION", "pcre2": "$PCRE2_VERSION"},
   "binary_sha256": "$BINARY_SHA256",
-  "recipe": "$RECIPE",
-  "macos": "$(/usr/bin/sw_vers -productVersion)",
-  "cc": "$(/usr/bin/cc --version | head -1)"
+  "recipe": "$RECIPE"
 }
 JSON
+# plutil parses JSON when it converts it; its -lint only reads property lists.
+/usr/bin/plutil -convert xml1 -o /dev/null "$STAGE/BUILD.json" || fail 'BUILD.json is not valid JSON'
+
+# One archive per build: fixed modes, the tag's commit time on every entry,
+# entries in sorted order, no owner names, no extended attributes and no
+# time or name in the gzip header.
+chmod 755 "$STAGE" "$STAGE/licenses" "$STAGE/crystal"
+chmod 644 "$STAGE/BUILD.json" "$STAGE"/licenses/*
+STAMP=$(TZ=UTC /bin/date -r "$(/usr/bin/git -C "$SOURCE" show -s --format=%ct HEAD)" +%Y%m%d%H%M.%S)
+find "$STAGE" -exec env TZ=UTC /usr/bin/touch -t "$STAMP" {} +
+LIST=$WORK/stage/entries
+(cd "$WORK/stage" && find "$NAME" | LC_ALL=C sort) > "$LIST"
 ARCHIVE=$ROOT/dist/$NAME.tar.gz
-# No AppleDouble entries: the archive holds the staged files and nothing else.
-COPYFILE_DISABLE=1 /usr/bin/tar --no-xattrs -czf "$ARCHIVE" -C "$WORK/stage" "$NAME"
+COPYFILE_DISABLE=1 /usr/bin/tar --no-xattrs --format ustar --uid 0 --gid 0 --uname '' --gname '' \
+    -cf - -C "$WORK/stage" -n -T "$LIST" | /usr/bin/gzip -n > "$ARCHIVE"
+LISTED=$(/usr/bin/tar -tzf "$ARCHIVE" | sed 's:/$::')
+[ "$LISTED" = "$(cat "$LIST")" ] || fail "the archive does not hold exactly the staged files: $LISTED"
+
 ARCHIVE_SHA256=$(sha256 "$ARCHIVE")
 cat > "$ROOT/dist/$NAME.json" <<JSON
 {
   "version": "$CRYSTAL_VERSION-caramel.$REVISION",
   "archive": "$NAME.tar.gz",
   "archive_sha256": "$ARCHIVE_SHA256",
-  "binary_sha256": "$BINARY_SHA256"
+  "binary_sha256": "$BINARY_SHA256",
+  "built_on": {"macos": "$(/usr/bin/sw_vers -productVersion)", "cc": "$(/usr/bin/cc --version | head -1)"}
 }
 JSON
+/usr/bin/plutil -convert xml1 -o /dev/null "$ROOT/dist/$NAME.json" || fail "$NAME.json is not valid JSON"
 printf 'Built %s\n  archive SHA-256 %s\n  binary SHA-256  %s\n' "$ARCHIVE" "$ARCHIVE_SHA256" "$BINARY_SHA256"

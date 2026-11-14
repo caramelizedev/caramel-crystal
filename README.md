@@ -16,14 +16,21 @@ tag, with two differences from the official macOS archive:
 ```
 
 It needs macOS on Apple Silicon, Apple's Command Line Tools and the network. A build takes
-about nine minutes and up to 9 GB of memory. Downloads and the build go to `work/`, or to the
-directory given as the first argument; its path must have no space.
+about nine minutes and up to 8.4 GiB of memory. Downloads and the build go to `work/`, or to
+the directory given as the first argument: an empty directory or one an earlier build made,
+with no space in its path.
 
 The result is in `dist/`:
 
-- `crystal-<tag>-caramel.<revision>-darwin-arm64.tar.gz`: the `crystal` binary, the licences
-  of Crystal and LLVM, and `BUILD.json`, which names every input by hash;
-- a `.json` file beside it with the archive's and the binary's SHA-256.
+- `crystal-<tag>-caramel.<revision>-darwin-arm64.tar.gz`: the `crystal` binary, the licence
+  texts of Crystal, LLVM, bdw-gc and PCRE2, and `BUILD.json`, which names every input by
+  hash and the commit of this recipe;
+- a `.json` file beside it with the archive's and the binary's SHA-256, and the macOS and
+  compiler versions of the machine that built it.
+
+The archive is packed the same way every time (fixed modes and times, sorted entries, no
+owner names), so two builds that produce the same binary from the same commit of this
+recipe produce the same archive.
 
 ## What the build refuses
 
@@ -35,20 +42,23 @@ The result is in `dist/`:
 - the multi-threaded runtime and the threaded code generation path are in the binary;
 - the binary loads no library outside `/usr/lib` and `/System/Library`;
 - a program it compiles, once with one thread and once with its default, runs and prints
-  what it should.
+  what it should;
+- the official archive's bdw-gc and PCRE2 are the versions whose licence texts are pinned;
+- the archive holds exactly the staged files, and both JSON files parse.
 
 ## Inputs
 
-`inputs` holds every pin: the Crystal tag and commit, the official archive and the LLVM
-package, each with its SHA-256. To build another tag, change the tag, its commit and the
-official archive's URL and hash, and set `REVISION` back to 1. To publish the same tag
-again, raise `REVISION`.
+`inputs` holds every pin: the Crystal tag and commit, the official archive, the LLVM
+package and the licence texts of bdw-gc and PCRE2, each with its SHA-256. The compiler
+links those two libraries statically from the official archive, which carries no licence
+file for either.
 
-The compiler also links bdw-gc and PCRE2 statically, from the official archive. `BUILD.json`
-records their versions; the official archive carries no licence file for either, so the
-archive built here does not yet either.
+To build another tag, change the tag, its commit and the official archive's URL and hash,
+check the two library versions, and set `REVISION` back to 1. To publish the same tag
+again, raise `REVISION`.
 
 ## Licence
 
 The recipe is under the [MIT License](LICENSE). The compiler it builds is Crystal, under
-the Apache License 2.0, with LLVM under the Apache License 2.0 with LLVM exceptions.
+the Apache License 2.0 with Swift exception; LLVM is under the Apache License 2.0 with LLVM
+exceptions, bdw-gc under its MIT-style licence and PCRE2 under the BSD 3-Clause licence.
