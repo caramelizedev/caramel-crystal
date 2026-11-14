@@ -1,0 +1,212 @@
+#!/bin/sh
+# Builds the pinned Crystal tag with threaded code generation, statically
+# against the pinned LLVM, using the official compiler of the same tag, and
+# packs the result.
+#
+#   ./build [WORK]
+#
+# WORK (default ./work) holds downloads and the build; its path must have no
+# space, because Crystal pastes link flags into a shell command unquoted.
+# The archive and its hashes land in ./dist.
+set -eu
+
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+. "$ROOT/inputs"
+
+fail() {
+    echo "build: $*" >&2
+    exit 1
+}
+
+sha256() {
+    /usr/bin/shasum -a 256 "$1" | cut -d' ' -f1
+}
+
+# Downloads URL to FILE unless FILE already has SHA256, then requires it.
+fetch() {
+    if [ ! -f "$3" ] || [ "$(sha256 "$3")" != "$2" ]; then
+        /usr/bin/curl --fail --silent --show-error --location --output "$3" "$1"
+    fi
+    [ "$(sha256 "$3")" = "$2" ] || fail "$1 does not have SHA-256 $2"
+}
+
+[ "$(uname -s)-$(uname -m)" = Darwin-arm64 ] || fail 'needs macOS on Apple Silicon'
+
+WORK=${1:-$ROOT/work}
+mkdir -p "$WORK"
+WORK=$(CDPATH= cd -- "$WORK" && pwd -P)
+case $WORK in
+    *[[:space:]]*) fail "the work directory has a space in its path: $WORK" ;;
+esac
+
+NAME=crystal-$CRYSTAL_VERSION-caramel.$REVISION-darwin-arm64
+SHORT=$(printf '%s' "$CRYSTAL_COMMIT" | cut -c1-9)
+OFFICIAL=$WORK/official
+LLVM=$WORK/llvm
+SOURCE=$WORK/src
+CONFIG=$LLVM/bin/llvm-config
+
+# 1. The inputs, each verified before it is used.
+mkdir -p "$WORK/downloads"
+fetch "$OFFICIAL_URL" "$OFFICIAL_SHA256" "$WORK/downloads/official.tar.gz"
+fetch "$LLVM_URL" "$LLVM_SHA256" "$WORK/downloads/llvmdev.conda"
+
+rm -rf "$OFFICIAL" "$LLVM" "$SOURCE" "$WORK/conda" "$WORK/bin" "$WORK/cache" "$WORK/smoke" "$WORK/stage"
+mkdir -p "$OFFICIAL" "$LLVM" "$WORK/conda" "$WORK/bin"
+/usr/bin/tar -xzf "$WORK/downloads/official.tar.gz" -C "$OFFICIAL" --strip-components 1
+/usr/bin/tar -xf "$WORK/downloads/llvmdev.conda" -C "$WORK/conda"
+set -- "$WORK"/conda/pkg-*.tar.zst
+[ $# -eq 1 ] && [ -f "$1" ] || fail "unexpected contents in $LLVM_URL"
+/usr/bin/tar -xf "$1" -C "$LLVM"
+[ -x "$CONFIG" ] || fail "$LLVM_URL has no bin/llvm-config"
+
+/usr/bin/git clone --quiet --depth 1 --branch "$CRYSTAL_VERSION" \
+    https://github.com/crystal-lang/crystal "$SOURCE"
+[ "$(/usr/bin/git -C "$SOURCE" rev-parse HEAD)" = "$CRYSTAL_COMMIT" ] ||
+    fail "tag $CRYSTAL_VERSION is not commit $CRYSTAL_COMMIT"
+
+# 2. LLVM's link line: static libraries from the pinned LLVM only, and system
+# libraries by name only.
+config() {
+    env -i PATH=/usr/bin:/bin DYLD_FALLBACK_LIBRARY_PATH=/usr/lib "$CONFIG" "$@"
+}
+[ "$(config --version)" = "$LLVM_VERSION" ] || fail "llvm-config is not $LLVM_VERSION"
+LIBRARIES=$(config --link-static --libfiles)
+for FILE in $LIBRARIES; do
+    case $FILE in
+        "$LLVM/lib/"*) [ -f "$FILE" ] || fail "llvm-config named a missing library: $FILE" ;;
+        *) fail "llvm-config named a library outside the pinned LLVM: $FILE" ;;
+    esac
+done
+SYSTEM=$(config --link-static --system-libs)
+for FLAG in $SYSTEM; do
+    case $FLAG in
+        -l*) ;;
+        *) fail "unexpected llvm-config system library flag: $FLAG" ;;
+    esac
+done
+# shellcheck disable=SC2086
+LDFLAGS=$(echo $LIBRARIES $SYSTEM)
+
+# 3. The build. The Makefile turns threads off when no `crystal` on PATH
+# reports a version, so the official compiler is on PATH and
+# sequential_codegen is set empty as well.
+printf '#!/bin/sh\nexec "%s" "$@"\n' "$OFFICIAL/embedded/bin/crystal" > "$WORK/bin/crystal"
+chmod 755 "$WORK/bin/crystal"
+(
+    cd "$SOURCE"
+    env -i HOME="$HOME" TMPDIR="${TMPDIR:-/tmp}" PATH="$WORK/bin:/usr/bin:/bin" \
+        CRYSTAL_CACHE_DIR="$WORK/cache" \
+        CRYSTAL_LIBRARY_PATH="$OFFICIAL/embedded/lib" \
+        LLVM_LDFLAGS="$LDFLAGS" \
+        /usr/bin/make crystal release=1 FLAGS=--no-debug sequential_codegen= \
+        LLVM_CONFIG="$CONFIG" \
+        CRYSTAL_CONFIG_TARGET="$TARGET" \
+        CRYSTAL_CONFIG_LIBRARY_PATH= \
+        CRYSTAL_CONFIG_BUILD_COMMIT="$SHORT"
+)
+BUILT=$SOURCE/.build/crystal
+[ -x "$BUILT" ] || fail 'the build produced no compiler'
+
+# 4. What the result must be.
+REPORT=$("$BUILT" --version)
+case $REPORT in
+    "Crystal $CRYSTAL_VERSION [$SHORT]"*) ;;
+    *) fail "the compiler reports: $REPORT" ;;
+esac
+printf '%s\n' "$REPORT" | grep -qx "LLVM: $LLVM_VERSION" || fail "the compiler reports: $REPORT"
+printf '%s\n' "$REPORT" | grep -qx "Default target: $TARGET" || fail "the compiler reports: $REPORT"
+
+# Threaded: the multi-threaded runtime is in, the single-threaded scheduler
+# is out, and the threaded code generation path was compiled.
+SYMBOLS=$WORK/symbols
+/usr/bin/nm "$BUILT" > "$SYMBOLS"
+grep -q 'Fiber::ExecutionContext' "$SYMBOLS" || fail 'the compiler has no multi-threaded runtime'
+! grep -q 'Crystal::Scheduler' "$SYMBOLS" || fail 'the compiler has the single-threaded scheduler'
+/usr/bin/strings -a "$BUILT" | grep -q "LLVM isn't multithreaded" ||
+    fail 'the compiler was built without threaded code generation'
+
+# It loads nothing outside macOS, which caramel's installer requires of every
+# tool in the toolchain.
+/usr/bin/otool -L "$BUILT" | tail -n +2 | while read -r LIBRARY _; do
+    case $LIBRARY in
+        /usr/lib/* | /System/Library/*) ;;
+        *) fail "the compiler loads $LIBRARY" ;;
+    esac
+done
+
+# It compiles a program of many modules on its threads, and the program runs.
+mkdir -p "$WORK/smoke"
+cat > "$WORK/smoke/smoke.cr" <<'CR'
+require "json"
+require "http/server"
+
+server = HTTP::Server.new { |context| context.response.print("ok") }
+address = server.bind_tcp("127.0.0.1", 0)
+puts({"threads" => [1, 2, 3].map(&.to_s), "bound" => address.port > 0}.to_json)
+server.close
+CR
+# compile LABEL [OPTION...]: builds the smoke program in a cache of its own.
+compile() {
+    LABEL=$1
+    shift
+    env -i HOME="$HOME" TMPDIR="${TMPDIR:-/tmp}" PATH=/usr/bin:/bin \
+        CRYSTAL_PATH="$SOURCE/src" \
+        CRYSTAL_LIBRARY_PATH="$OFFICIAL/embedded/lib" \
+        CRYSTAL_CACHE_DIR="$WORK/smoke/cache-$LABEL" \
+        "$BUILT" build "$WORK/smoke/smoke.cr" -o "$WORK/smoke/smoke-$LABEL" \
+        -Dwithout_openssl -Dwithout_zlib --stats "$@" > "$WORK/smoke/$LABEL.log" 2>&1 ||
+        fail "the smoke build failed: $WORK/smoke/$LABEL.log"
+    PRINTED=$("$WORK/smoke/smoke-$LABEL")
+    [ "$PRINTED" = '{"threads":["1","2","3"],"bound":true}' ] ||
+        fail "the smoke program ($LABEL) printed: $PRINTED"
+    printf 'smoke, %s: %s\n' "$LABEL" \
+        "$(tr '\r' '\n' < "$WORK/smoke/$LABEL.log" | sed -n 's/^Codegen (bc+obj): *\([0-9][0-9:.]*\).*/bc+obj \1/p' | tail -1)"
+}
+compile one-thread --threads 1
+compile default-threads
+
+# 5. The archive: the compiler, the licences of Crystal and LLVM, and what
+# it was built from.
+STAGE=$WORK/stage/$NAME
+mkdir -p "$STAGE/licenses" "$ROOT/dist"
+cp "$BUILT" "$STAGE/crystal"
+cp "$SOURCE/LICENSE" "$STAGE/licenses/crystal-LICENSE"
+cp "$SOURCE/NOTICE.md" "$STAGE/licenses/crystal-NOTICE.md"
+cp "$LLVM/info/licenses/llvm/LICENSE.TXT" "$STAGE/licenses/llvm-LICENSE.TXT"
+version_of() {
+    sed -n 's/^Version: *//p' "$OFFICIAL/embedded/lib/pkgconfig/$1.pc"
+}
+BINARY_SHA256=$(sha256 "$STAGE/crystal")
+# The commit of this recipe, marked when the checkout has uncommitted changes.
+RECIPE=$(/usr/bin/git -C "$ROOT" rev-parse --verify --quiet HEAD 2>/dev/null) || RECIPE=unrecorded
+[ -z "$(/usr/bin/git -C "$ROOT" status --porcelain 2>/dev/null)" ] || RECIPE=$RECIPE+uncommitted
+cat > "$STAGE/BUILD.json" <<JSON
+{
+  "name": "$NAME",
+  "crystal": {"version": "$CRYSTAL_VERSION", "commit": "$CRYSTAL_COMMIT"},
+  "revision": $REVISION,
+  "target": "$TARGET",
+  "threaded_codegen": true,
+  "llvm": {"version": "$LLVM_VERSION", "url": "$LLVM_URL", "sha256": "$LLVM_SHA256"},
+  "bootstrap": {"url": "$OFFICIAL_URL", "sha256": "$OFFICIAL_SHA256"},
+  "linked_from_bootstrap": {"bdw-gc": "$(version_of bdw-gc)", "pcre2": "$(version_of libpcre2-8)"},
+  "binary_sha256": "$BINARY_SHA256",
+  "recipe": "$RECIPE",
+  "macos": "$(/usr/bin/sw_vers -productVersion)",
+  "cc": "$(/usr/bin/cc --version | head -1)"
+}
+JSON
+ARCHIVE=$ROOT/dist/$NAME.tar.gz
+# No AppleDouble entries: the archive holds the staged files and nothing else.
+COPYFILE_DISABLE=1 /usr/bin/tar --no-xattrs -czf "$ARCHIVE" -C "$WORK/stage" "$NAME"
+ARCHIVE_SHA256=$(sha256 "$ARCHIVE")
+cat > "$ROOT/dist/$NAME.json" <<JSON
+{
+  "version": "$CRYSTAL_VERSION-caramel.$REVISION",
+  "archive": "$NAME.tar.gz",
+  "archive_sha256": "$ARCHIVE_SHA256",
+  "binary_sha256": "$BINARY_SHA256"
+}
+JSON
+printf 'Built %s\n  archive SHA-256 %s\n  binary SHA-256  %s\n' "$ARCHIVE" "$ARCHIVE_SHA256" "$BINARY_SHA256"

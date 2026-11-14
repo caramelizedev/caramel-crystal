@@ -1,0 +1,24 @@
+# The pinned inputs of the build, read by ./build as shell assignments.
+# Changing a line is a reviewed dependency change.
+
+# The Crystal tag, and the commit that tag must resolve to.
+CRYSTAL_VERSION=1.22.1
+CRYSTAL_COMMIT=23828b0a40d148c5a891c23ad0d14163979fc01a
+
+# This build's number for that tag; raise it to publish the tag again.
+REVISION=1
+
+# The official archive: the compiler that does the build, and the bdw-gc and
+# PCRE2 libraries linked into the result. Same pin as caramel's
+# tools/toolchain/mise.lock.
+OFFICIAL_URL=https://github.com/crystal-lang/crystal/releases/download/1.22.1/crystal-1.22.1-1-darwin-universal.tar.gz
+OFFICIAL_SHA256=8f2dc1ba8219bb2606a2390b11f903f70be346cfeae869557b7c927f37ed9023
+
+# LLVM's static libraries and headers. Same pin as caramel's
+# tools/editor-darwin-arm64.json.
+LLVM_VERSION=15.0.7
+LLVM_URL=https://conda.anaconda.org/conda-forge/osx-arm64/llvmdev-15.0.7-h4429f82_5.conda
+LLVM_SHA256=f3d4009d64a5dd2755a90437162fb447879181f1b80fac42982c5827ef94fa3e
+
+# The default target of the programs the compiler builds, as the official one has it.
+TARGET=aarch64-apple-macosx11.0
