@@ -1,6 +1,7 @@
 # caramel-crystal
 
-Builds the Crystal compiler that Caramel's managed toolchain runs on Apple Silicon macOS.
+Builds the Crystal compiler that Caramel's managed toolchain runs on Apple Silicon macOS,
+and the PCRE2 library that the programs it compiles link.
 
 It is a Crystal release, unpatched, built by the official compiler of the same tag. It
 differs from the official macOS archive's compiler in what it is built with:
@@ -24,15 +25,20 @@ with no space in its path.
 
 The result is in `dist/`:
 
-- `crystal-<tag>-caramel.<revision>-darwin-arm64.tar.gz`: the `crystal` binary, the licence
-  texts of Crystal, LLVM, bdw-gc and PCRE2, and `BUILD.json`, which names every input by
-  hash and the commit of this recipe;
-- a `.json` file beside it with the archive's and the binary's SHA-256, and the macOS and
-  compiler versions of the machine that built it.
+- `crystal-<tag>-caramel.<revision>-darwin-arm64.tar.gz`, which holds:
+  - `crystal`, the compiler;
+  - `lib/libpcre2-8.a`, the PCRE2 the compiler was linked with, for the programs it
+    builds: a program links it when `lib` comes before the official archive's
+    `embedded/lib` in `CRYSTAL_LIBRARY_PATH`, and the official archive's older PCRE2
+    otherwise;
+  - `licenses/`, the licence texts of Crystal, LLVM, zstd, PCRE2 and bdw-gc;
+  - `BUILD.json`, which names every input by hash and the commit of this recipe;
+- a `.json` file beside it with the SHA-256 of the archive, the binary and the library, and
+  the macOS and compiler versions of the machine that built it.
 
 The archive is packed the same way every time (fixed modes and times, sorted entries, no
-owner names), so two builds that produce the same binary from the same commit of this
-recipe produce the same archive.
+owner names), so two builds that produce the same binary and library from the same commit
+of this recipe produce the same archive.
 
 ## What the build refuses
 
@@ -46,7 +52,8 @@ recipe produce the same archive.
 - the multi-threaded runtime and the threaded code generation path are in the binary;
 - the binary loads no library outside `/usr/lib` and `/System/Library`;
 - a program it compiles, with one thread, with its default and in release mode, runs and
-  prints what it should, and links the pinned PCRE2;
+  prints what it should, and links the PCRE2 library the archive carries;
+- that library's objects are built for the oldest macOS the default target names;
 - the official archive's bdw-gc is the version whose licence text is pinned;
 - the archive holds exactly the staged files, and both JSON files parse.
 

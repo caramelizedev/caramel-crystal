@@ -58,7 +58,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           {
-            echo "Crystal ${GITHUB_REF_NAME%%-caramel.*}, built with threaded code generation for Caramel's toolchain."
+            echo "Crystal ${GITHUB_REF_NAME%%-caramel.*} for Caramel's toolchain on Apple Silicon macOS: the compiler, built with threaded code generation, and the PCRE2 library the programs it builds link."
             echo
             echo '```json'
             cat dist/*.json

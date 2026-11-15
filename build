@@ -69,9 +69,12 @@ ZSTD=$WORK/zstd
 PCRE2=$WORK/pcre2
 SOURCE=$WORK/src
 CONFIG=$LLVM/bin/llvm-config
-# Where the compiler, and the programs the checks build with it, find the
-# libraries they link: PCRE2 as built here, then bdw-gc in the official archive.
-LIBRARY_PATH=$PCRE2/lib:$OFFICIAL/embedded/lib
+# What the archive holds. The PCRE2 library goes there as soon as it is built,
+# so the compiler, the programs the checks build with it, and the programs it
+# will build for Caramel all link the same file; bdw-gc comes from the
+# official archive.
+STAGE=$WORK/stage/$NAME
+LIBRARY_PATH=$STAGE/lib:$OFFICIAL/embedded/lib
 
 # 1. The inputs, each verified before it is used.
 mkdir -p "$WORK/downloads"
@@ -104,18 +107,25 @@ version_of() {
     fail "the official archive's bdw-gc is $(version_of bdw-gc), not $GC_VERSION"
 
 # 2. PCRE2, as a static library with the options the official archive's has.
+# ZERO_AR_DATE keeps the build's time out of the library.
 (
     cd "$WORK/pcre2-src"
     env -i HOME="$HOME" TMPDIR="${TMPDIR:-/tmp}" PATH=/usr/bin:/bin \
-        MACOSX_DEPLOYMENT_TARGET="$MINIMUM" \
+        MACOSX_DEPLOYMENT_TARGET="$MINIMUM" ZERO_AR_DATE=1 \
         ./configure --prefix="$PCRE2" --disable-shared --enable-static --enable-jit \
         > "$WORK/pcre2-configure.log" 2>&1 || fail "PCRE2 did not configure: $WORK/pcre2-configure.log"
     env -i HOME="$HOME" TMPDIR="${TMPDIR:-/tmp}" PATH=/usr/bin:/bin \
-        MACOSX_DEPLOYMENT_TARGET="$MINIMUM" \
+        MACOSX_DEPLOYMENT_TARGET="$MINIMUM" ZERO_AR_DATE=1 \
         /usr/bin/make -j "$(/usr/sbin/sysctl -n hw.ncpu)" install \
         > "$WORK/pcre2-make.log" 2>&1 || fail "PCRE2 did not build: $WORK/pcre2-make.log"
 )
 [ -f "$PCRE2/lib/libpcre2-8.a" ] || fail 'the PCRE2 build produced no static library'
+mkdir -p "$STAGE/lib"
+cp "$PCRE2/lib/libpcre2-8.a" "$STAGE/lib/libpcre2-8.a"
+# Programs built for the oldest macOS of the target link it without complaint.
+STAMPED=$(/usr/bin/otool -l "$STAGE/lib/libpcre2-8.a" | awk '$1 == "minos" { print $2 }' | LC_ALL=C sort -u)
+[ "$STAMPED" = "$MINIMUM" ] ||
+    fail "the PCRE2 library's objects require macOS $(printf '%s' "$STAMPED" | tr '\n' ' '), not $MINIMUM"
 
 # 3. LLVM's link line: static libraries from the pinned LLVM only, the pinned
 # static zstd, and macOS's own libraries by name.
@@ -232,9 +242,8 @@ compile one-thread --threads 1
 compile default-threads
 compile release --release
 
-# 6. The archive: the compiler, the licences of everything linked into it,
-# and what it was built from.
-STAGE=$WORK/stage/$NAME
+# 6. The archive: the compiler, the PCRE2 library for the programs it builds,
+# the licences of everything linked into either, and what it was built from.
 mkdir -p "$STAGE/licenses" "$ROOT/dist"
 cp "$BUILT" "$STAGE/crystal"
 cp "$SOURCE/LICENSE" "$STAGE/licenses/crystal-LICENSE"
@@ -257,6 +266,7 @@ copy_licences "llvm-$LLVM_VERSION" "$LLVM/info/licenses"
 copy_licences "zstd-$ZSTD_VERSION" "$ZSTD/info/licenses"
 
 BINARY_SHA256=$(sha256 "$STAGE/crystal")
+LIBRARY_SHA256=$(sha256 "$STAGE/lib/libpcre2-8.a")
 # The commit of this recipe, marked when the checkout has uncommitted changes.
 RECIPE=$(/usr/bin/git -C "$ROOT" rev-parse --verify --quiet HEAD 2>/dev/null) || RECIPE=unrecorded
 [ -z "$(/usr/bin/git -C "$ROOT" status --porcelain 2>/dev/null)" ] || RECIPE=$RECIPE+uncommitted
@@ -272,7 +282,7 @@ cat > "$STAGE/BUILD.json" <<JSON
   "bootstrap": {"url": "$OFFICIAL_URL", "sha256": "$OFFICIAL_SHA256"},
   "llvm": {"version": "$LLVM_VERSION", "url": "$LLVM_URL", "sha256": "$LLVM_SHA256"},
   "zstd": {"version": "$ZSTD_VERSION", "url": "$ZSTD_URL", "sha256": "$ZSTD_SHA256"},
-  "pcre2": {"version": "$PCRE2_VERSION", "url": "$PCRE2_URL", "sha256": "$PCRE2_SHA256"},
+  "pcre2": {"version": "$PCRE2_VERSION", "url": "$PCRE2_URL", "sha256": "$PCRE2_SHA256", "library": "lib/libpcre2-8.a", "library_sha256": "$LIBRARY_SHA256"},
   "bdw-gc": {"version": "$GC_VERSION", "from": "bootstrap"},
   "binary_sha256": "$BINARY_SHA256",
   "recipe": "$RECIPE"
@@ -284,8 +294,8 @@ JSON
 # One archive per build: fixed modes, the tag's commit time on every entry,
 # entries in sorted order, no owner names, no extended attributes and no
 # time or name in the gzip header.
-chmod 755 "$STAGE" "$STAGE/licenses" "$STAGE/crystal"
-chmod 644 "$STAGE/BUILD.json" "$STAGE"/licenses/*
+chmod 755 "$STAGE" "$STAGE/lib" "$STAGE/licenses" "$STAGE/crystal"
+chmod 644 "$STAGE/BUILD.json" "$STAGE/lib/libpcre2-8.a" "$STAGE"/licenses/*
 STAMP=$(TZ=UTC /bin/date -r "$(/usr/bin/git -C "$SOURCE" show -s --format=%ct HEAD)" +%Y%m%d%H%M.%S)
 find "$STAGE" -exec env TZ=UTC /usr/bin/touch -t "$STAMP" {} +
 LIST=$WORK/stage/entries
@@ -303,6 +313,7 @@ cat > "$ROOT/dist/$NAME.json" <<JSON
   "archive": "$NAME.tar.gz",
   "archive_sha256": "$ARCHIVE_SHA256",
   "binary_sha256": "$BINARY_SHA256",
+  "pcre2_library_sha256": "$LIBRARY_SHA256",
   "built_on": {"macos": "$(/usr/bin/sw_vers -productVersion)", "cc": "$(/usr/bin/cc --version | head -1)"}
 }
 JSON
